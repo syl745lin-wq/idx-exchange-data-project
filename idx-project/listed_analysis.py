@@ -17,4 +17,4 @@ print("data shape:", df.shape)
 
 df.to_csv("data/processed/sold_combined.csv", index=False)
 
-print("finish sold data combination")
+print("finish sold data aggregation")
