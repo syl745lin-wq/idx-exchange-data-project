@@ -1,1 +1,0 @@
-# idx-exchange-data-project
