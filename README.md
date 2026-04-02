@@ -1,4 +1,4 @@
-# IDX MLS Analysis
+# IDX Real Estate Data Analysis
 
 This repository contains Python scripts for sold and listed transaction analysis.
 
