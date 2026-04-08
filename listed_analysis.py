@@ -11,6 +11,10 @@ print(listed.shape)
 # 2. Review column data types
 print("Column data types:")
 print(listed.dtypes)
+dtypes_df = listed.dtypes.reset_index()
+dtypes_df.columns = ["Column", "Data Type"]
+
+print(dtypes_df.to_markdown())
 
 # 3. Identify high-missing columns
 missing_summary = pd.DataFrame({
@@ -20,7 +24,7 @@ missing_summary = pd.DataFrame({
 
 print("High-missing columns:")
 print(missing_summary[missing_summary["missing_percent"] > 90])
-
+print(missing_summary.reset_index().to_markdown())
 # 4. Separate market analysis fields from metadata fields
 market_analysis_fields = [
     "ListingId",

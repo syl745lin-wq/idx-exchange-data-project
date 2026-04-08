@@ -2,7 +2,7 @@ import pandas as pd
 
 sold = pd.read_csv("output/sold_all.csv")
 
-print("DATASET UNDERSTANDING: LISTED")
+print("DATASET UNDERSTANDING: SOLD")
 
 # 1. Identify number of rows and columns
 print("Number of rows and columns:")
@@ -11,7 +11,10 @@ print(sold.shape)
 # 2. Review column data types
 print("Column data types:")
 print(sold.dtypes)
+dtypes_df = sold.dtypes.reset_index()
+dtypes_df.columns = ["Column", "Data Type"]
 
+print(dtypes_df.to_markdown())
 # 3. Identify high-missing columns
 missing_summary = pd.DataFrame({
     "missing_count": sold.isnull().sum(),
@@ -20,7 +23,7 @@ missing_summary = pd.DataFrame({
 
 print("High-missing columns:")
 print(missing_summary[missing_summary["missing_percent"] > 90])
-
+print(missing_summary.reset_index().to_markdown())
 # 4. Separate market analysis fields from metadata fields
 market_analysis_fields = [
     "ListingId",
