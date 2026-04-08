@@ -1,45 +1,62 @@
 import pandas as pd
-import glob
 
-# ETL process: raw -> merge -> clean -> output
+sold = pd.read_csv("output/sold_all.csv")
 
-# 1. Load & merge data from CSV files：
-files = glob.glob("data/raw/CRMLSSold*.csv")
+print("DATASET UNDERSTANDING: LISTED")
 
-df_list = []
+# 1. Identify number of rows and columns
+print("Number of rows and columns:")
+print(sold.shape)
 
-for file in files:
-    df = pd.read_csv(file)
-    df_list.append(df)
+# 2. Review column data types
+print("Column data types:")
+print(sold.dtypes)
 
-if len(df_list) == 0:
-    print(" No files found! Check your file path.")
-else:
-    all_data = pd.concat(df_list, ignore_index=True)
+# 3. Identify high-missing columns
+missing_summary = pd.DataFrame({
+    "missing_count": sold.isnull().sum(),
+    "missing_percent": (sold.isnull().mean() * 100)
+}).sort_values(by="missing_percent", ascending=False)
 
-# 2. Cleaning data:
+print("High-missing columns:")
+print(missing_summary[missing_summary["missing_percent"] > 90])
 
-df = pd.read_csv("output/sold_all1.csv")
+# 4. Separate market analysis fields from metadata fields
+market_analysis_fields = [
+    "ListingId",
+    "PropertyType",
+    "PropertySubType",
+    "City",
+    "CountyOrParish",
+    "PostalCode",
+    "CloseDate",
+    "ListingContractDate",
+    "ClosePrice",
+    "ListPrice",
+    "OriginalListPrice",
+    "LivingArea",
+    "LotSizeAcres",
+    "BedroomsTotal",
+    "BathroomsTotalInteger",
+    "DaysOnMarket",
+    "YearBuilt",
+]
 
-# change data type:
-df[""] = pd.to_numeric(df[""], errors="coerce")
-df[""] = pd.to_numeric(df[""], errors="coerce")
-df[""] = pd.to_datetime(df[""], errors="coerce")
+metadata_fields = [
+    "ListingKey",
+    "ListingKeyNumeric",
+    "ListAgentEmail",
+    "ListAgentFirstName",
+    "ListAgentLastName",
+    "ListAgentFullName",
+    "BuyerAgentFirstName",
+    "BuyerAgentLastName",
+    "BuyerOfficeName",
+    "ListOfficeName",
+]
 
-# Delete key missing values:
-df = df.dropna(subset=["", ""])
+print("Market analysis fields found in dataset:")
+print([col for col in market_analysis_fields if col in sold.columns])
 
-# Remove outliers：
-df = df[(df[""] > )]
-
-
-# drop duplicates:
-df = df.drop_duplicates()
-
-
-
-#4. Output:
-
-all_data.to_csv("output/cleaned_sold_all.csv", index=False)
-
-print(all_data.shape)
+print("Metadata fields found in dataset:")
+print([col for col in metadata_fields if col in sold.columns])
