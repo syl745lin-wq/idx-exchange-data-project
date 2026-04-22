@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 
-from week23_common import WEEK23_DIR, ensure_dir
-
-FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
+BASE_DIR = Path(__file__).resolve().parent
+WEEK23_DIR = BASE_DIR / "output" / "week2_3"
 OUTPUT_DIR = WEEK23_DIR / "mortgage_enrichment"
+FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
 SOLD_INPUT = WEEK23_DIR / "sold" / "sold_residential_week23.csv"
 LISTED_INPUT = WEEK23_DIR / "listed" / "listed_residential_week23.csv"
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
 
 
 def fetch_mortgage_rates() -> tuple[pd.DataFrame, pd.DataFrame]:
