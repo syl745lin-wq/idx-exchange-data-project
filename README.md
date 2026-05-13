@@ -118,6 +118,35 @@ The Week 5 work focused on documenting and interpreting the cleaning stage in mo
 
 - [week5_summary_report.md](/Users/siyulin/Desktop/Internship/idx-project/week5_summary_report.md)
 
+## Week 6: Data Cleaning and Preparation
+
+The Week 6 stage continued the cleaning and preparation process on top of the Week 5 cleaned datasets.
+
+### Main tasks
+
+- Reconfirm date fields in `datetime` format
+- Reconfirm key numeric fields in numeric format
+- Normalize blank strings into missing values
+- Document which missing values were retained and why
+- Cross-fill `LotSizeAcres` and `LotSizeSquareFeet` when one representation was available
+- Produce preparation-specific inventories and transformation logs
+
+### Important business logic
+
+- In `sold`, `CloseDate` and `ClosePrice` remain required fields
+- In `listed`, missing `CloseDate`, `ClosePrice`, and `PurchaseContractDate` may still be valid for active or not-yet-closed listings
+
+### Main outputs
+
+- [output/week6/sold/sold_analysis_ready_week6.csv](/Users/siyulin/Desktop/Internship/idx-project/output/week6/sold/sold_analysis_ready_week6.csv)
+- [output/week6/listed/listed_analysis_ready_week6.csv](/Users/siyulin/Desktop/Internship/idx-project/output/week6/listed/listed_analysis_ready_week6.csv)
+- date conversion checks
+- numeric conversion checks
+- missing summaries
+- missing-value handling summaries
+- column inventories
+- Week 6 transformation logs
+
 ## Running the Pipeline
 
 Run the scripts from the project root:

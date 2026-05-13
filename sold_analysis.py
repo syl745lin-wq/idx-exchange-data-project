@@ -18,6 +18,7 @@ OUTPUT_DIR = BASE_DIR / "output"
 WEEK23_DIR = OUTPUT_DIR / "week2_3" / "sold"
 MORTGAGE_DIR = OUTPUT_DIR / "week2_3" / "mortgage_enrichment"
 WEEK45_DIR = OUTPUT_DIR / "week4_5" / "sold"
+WEEK6_DIR = OUTPUT_DIR / "week6" / "sold"
 FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
 
 NUMERIC_FIELDS = [
@@ -143,6 +144,15 @@ WEEK45_DROP_COLUMNS = [
     "latfilled",
     "lonfilled",
 ]
+WEEK6_OUTLIER_COLUMNS = [
+    "ClosePrice",
+    "ListPrice",
+    "OriginalListPrice",
+    "LivingArea",
+    "LotSizeAcres",
+    "DaysOnMarket",
+]
+WEEK6_REQUIRED_FIELDS = ["ListingId", "ListingContractDate", "ListPrice", "CloseDate", "ClosePrice"]
 
 
 def ensure_dir(path: Path) -> None:
@@ -473,6 +483,14 @@ def run_week23_analysis() -> Dict[str, Path]:
 
 
 def fetch_mortgage_rates() -> Tuple[pd.DataFrame, pd.DataFrame]:
+    weekly_cache = MORTGAGE_DIR / "fred_mortgage30us_weekly.csv"
+    monthly_cache = MORTGAGE_DIR / "fred_mortgage30us_monthly.csv"
+    if weekly_cache.exists() and monthly_cache.exists():
+        return (
+            pd.read_csv(weekly_cache, low_memory=False),
+            pd.read_csv(monthly_cache, low_memory=False),
+        )
+
     mortgage = pd.read_csv(FRED_URL)
     date_col = mortgage.columns[0]
     rate_col = mortgage.columns[1]
@@ -685,6 +703,276 @@ def build_row_count_summary(
     return pd.DataFrame(rows)
 
 
+def compute_outlier_summary(df: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
+    rows = []
+    for column in columns:
+        if column not in df.columns:
+            continue
+        series = pd.to_numeric(df[column], errors="coerce").dropna()
+        if series.empty:
+            continue
+        q1 = float(series.quantile(0.25))
+        q3 = float(series.quantile(0.75))
+        iqr = q3 - q1
+        p01 = float(series.quantile(0.01))
+        p99 = float(series.quantile(0.99))
+        iqr_lower = q1 - 1.5 * iqr
+        iqr_upper = q3 + 1.5 * iqr
+        pct_outlier_count = int(((series < p01) | (series > p99)).sum())
+        iqr_outlier_count = int(((series < iqr_lower) | (series > iqr_upper)).sum())
+        rows.append(
+            {
+                "field": column,
+                "non_null_count": int(series.shape[0]),
+                "p01": p01,
+                "p99": p99,
+                "iqr_lower": iqr_lower,
+                "iqr_upper": iqr_upper,
+                "percentile_outlier_count": pct_outlier_count,
+                "iqr_outlier_count": iqr_outlier_count,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def add_week6_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["sale_to_list_ratio"] = df["ClosePrice"] / df["ListPrice"]
+    df["sale_to_original_list_ratio"] = df["ClosePrice"] / df["OriginalListPrice"]
+    df["close_price_per_sqft"] = df["ClosePrice"] / df["LivingArea"]
+    df["listing_to_close_days"] = (
+        pd.to_datetime(df["CloseDate"], errors="coerce") - pd.to_datetime(df["ListingContractDate"], errors="coerce")
+    ).dt.days
+    df["contract_to_close_days"] = (
+        pd.to_datetime(df["CloseDate"], errors="coerce") - pd.to_datetime(df["PurchaseContractDate"], errors="coerce")
+    ).dt.days
+    if "LotSizeSquareFeet" in df.columns:
+        df["lot_size_sqft_final"] = df["LotSizeSquareFeet"]
+    else:
+        df["lot_size_sqft_final"] = pd.NA
+    acres_mask = df["lot_size_sqft_final"].isna() & df["LotSizeAcres"].notna()
+    df.loc[acres_mask, "lot_size_sqft_final"] = df.loc[acres_mask, "LotSizeAcres"] * 43560
+    return df
+
+
+def winsorize_columns(df: pd.DataFrame, summary: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for _, row in summary.iterrows():
+        field = row["field"]
+        if field not in df.columns:
+            continue
+        lower = row["p01"]
+        upper = row["p99"]
+        df[f"{field}_winsorized"] = pd.to_numeric(df[field], errors="coerce").clip(lower=lower, upper=upper)
+        df[f"{field}_percentile_outlier_flag"] = (
+            pd.to_numeric(df[field], errors="coerce").lt(lower) | pd.to_numeric(df[field], errors="coerce").gt(upper)
+        )
+    return df
+
+
+def build_week6_monthly_summary(df: pd.DataFrame) -> pd.DataFrame:
+    working = df.copy()
+    working["year_month"] = working["year_month"].astype(str)
+    return (
+        working.groupby("year_month", dropna=False)
+        .agg(
+            transaction_count=("ListingId", "count"),
+            median_close_price=("ClosePrice_winsorized", "median"),
+            mean_close_price=("ClosePrice_winsorized", "mean"),
+            median_days_on_market=("DaysOnMarket_winsorized", "median"),
+            median_sale_to_list_ratio=("sale_to_list_ratio", "median"),
+            avg_mortgage_rate=("mortgage30us_monthly_avg", "mean"),
+        )
+        .reset_index()
+        .sort_values("year_month")
+    )
+
+
+def build_week6_county_summary(df: pd.DataFrame) -> pd.DataFrame:
+    working = df[df["CountyOrParish"].notna()].copy()
+    return (
+        working.groupby("CountyOrParish", dropna=False)
+        .agg(
+            transaction_count=("ListingId", "count"),
+            median_close_price=("ClosePrice_winsorized", "median"),
+            mean_close_price=("ClosePrice_winsorized", "mean"),
+            median_close_price_per_sqft=("close_price_per_sqft", "median"),
+            median_days_on_market=("DaysOnMarket_winsorized", "median"),
+            avg_mortgage_rate=("mortgage30us_monthly_avg", "mean"),
+        )
+        .reset_index()
+        .sort_values(["transaction_count", "median_close_price"], ascending=[False, False])
+    )
+
+
+def build_week6_county_month_summary(df: pd.DataFrame) -> pd.DataFrame:
+    working = df[df["CountyOrParish"].notna()].copy()
+    working["year_month"] = working["year_month"].astype(str)
+    return (
+        working.groupby(["CountyOrParish", "year_month"], dropna=False)
+        .agg(
+            transaction_count=("ListingId", "count"),
+            median_close_price=("ClosePrice_winsorized", "median"),
+            mean_close_price=("ClosePrice_winsorized", "mean"),
+            median_days_on_market=("DaysOnMarket_winsorized", "median"),
+        )
+        .reset_index()
+        .sort_values(["CountyOrParish", "year_month"])
+    )
+
+
+def run_week6_analysis(input_path: Path) -> Dict[str, Path]:
+    ensure_dir(WEEK6_DIR)
+    df = pd.read_csv(input_path, low_memory=False)
+    df = add_week6_features(df)
+    outlier_summary = compute_outlier_summary(df, WEEK6_OUTLIER_COLUMNS)
+    feature_ready = winsorize_columns(df, outlier_summary)
+    monthly_summary = build_week6_monthly_summary(feature_ready)
+    county_summary = build_week6_county_summary(feature_ready)
+    county_month_summary = build_week6_county_month_summary(feature_ready)
+
+    paths = {
+        "feature_ready": WEEK6_DIR / "sold_feature_ready_week6.csv",
+        "outlier_summary": WEEK6_DIR / "sold_outlier_summary_week6.csv",
+        "monthly_summary": WEEK6_DIR / "sold_monthly_market_summary_week6.csv",
+        "county_summary": WEEK6_DIR / "sold_county_market_summary_week6.csv",
+        "county_month_summary": WEEK6_DIR / "sold_county_month_market_summary_week6.csv",
+    }
+    feature_ready.to_csv(paths["feature_ready"], index=False)
+    outlier_summary.to_csv(paths["outlier_summary"], index=False)
+    monthly_summary.to_csv(paths["monthly_summary"], index=False)
+    county_summary.to_csv(paths["county_summary"], index=False)
+    county_month_summary.to_csv(paths["county_month_summary"], index=False)
+    return paths
+
+
+def fill_lot_size_fields(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    acres_from_sqft_mask = df["LotSizeAcres"].isna() & df["LotSizeSquareFeet"].notna()
+    sqft_from_acres_mask = df["LotSizeSquareFeet"].isna() & df["LotSizeAcres"].notna()
+    df.loc[acres_from_sqft_mask, "LotSizeAcres"] = df.loc[acres_from_sqft_mask, "LotSizeSquareFeet"] / 43560
+    df.loc[sqft_from_acres_mask, "LotSizeSquareFeet"] = df.loc[sqft_from_acres_mask, "LotSizeAcres"] * 43560
+    return df
+
+
+def build_date_conversion_check(df: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
+    rows = []
+    for column in columns:
+        if column not in df.columns:
+            continue
+        rows.append(
+            {
+                "column": column,
+                "dtype_after_conversion": str(df[column].dtype),
+                "non_null_count": int(df[column].notna().sum()),
+                "null_count": int(df[column].isna().sum()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_numeric_conversion_check(df: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
+    rows = []
+    for column in columns:
+        if column not in df.columns:
+            continue
+        series = pd.to_numeric(df[column], errors="coerce")
+        rows.append(
+            {
+                "column": column,
+                "dtype_after_conversion": str(df[column].dtype),
+                "non_null_count": int(series.notna().sum()),
+                "null_count": int(series.isna().sum()),
+                "min_value": float(series.min()) if series.notna().any() else pd.NA,
+                "max_value": float(series.max()) if series.notna().any() else pd.NA,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_week6_missing_action_summary(df: pd.DataFrame) -> pd.DataFrame:
+    actions = []
+    for column in df.columns:
+        missing_count = int(df[column].isna().sum())
+        missing_percent = round(float(df[column].isna().mean() * 100), 2)
+        if column in {"LotSizeAcres", "LotSizeSquareFeet"}:
+            action = "cross-filled when companion lot-size field existed; remaining nulls retained"
+        elif column in {"Latitude", "Longitude"}:
+            action = "retained nulls; coordinate gaps flagged earlier for non-spatial caution"
+        elif column in {"CloseDate", "ClosePrice"}:
+            action = "required for sold data; rows missing these fields were removed in Week 5"
+        elif column in WEEK6_REQUIRED_FIELDS:
+            action = "required core field; missing rows removed upstream"
+        else:
+            action = "retained when analytically optional"
+        actions.append(
+            {
+                "column": column,
+                "missing_count": missing_count,
+                "missing_percent": missing_percent,
+                "handling_action": action,
+            }
+        )
+    return pd.DataFrame(actions).sort_values(["missing_percent", "column"], ascending=[False, True])
+
+
+def build_week6_column_inventory(df: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "column": column,
+                "dtype": str(df[column].dtype),
+                "is_required_field": column in WEEK6_REQUIRED_FIELDS,
+            }
+            for column in df.columns
+        ]
+    )
+
+
+def week6_transformation_rows() -> List[Dict[str, object]]:
+    return [
+        {"step": 1, "transformation": "load_week45_cleaned_output", "reason": "Build Week 6 preparation on top of the cleaned Week 5 sold dataset."},
+        {"step": 2, "transformation": "reconfirm_datetime_columns", "reason": "Ensure core sold timeline fields are consistently typed as datetime."},
+        {"step": 3, "transformation": "reconfirm_numeric_columns", "reason": "Ensure price, size, coordinate, and market-time fields remain numeric and analysis-ready."},
+        {"step": 4, "transformation": "normalize_blank_strings", "reason": "Treat blank strings as missing values consistently."},
+        {"step": 5, "transformation": "fill_lot_size_crosswalk", "reason": "Cross-fill LotSizeAcres and LotSizeSquareFeet when one representation is available."},
+        {"step": 6, "transformation": "document_missing_value_handling", "reason": "Summarize which missing values were removed upstream and which were retained as analytically acceptable."},
+    ]
+
+
+def run_week6_preparation(input_path: Path) -> Dict[str, Path]:
+    ensure_dir(WEEK6_DIR)
+    df = pd.read_csv(input_path, low_memory=False)
+    df = week45_clean_strings(df)
+    df = week45_convert_types(df)
+    df = fill_lot_size_fields(df)
+
+    date_check = build_date_conversion_check(df, WEEK45_DATE_COLUMNS)
+    numeric_check = build_numeric_conversion_check(df, WEEK45_NUMERIC_COLUMNS)
+    missing_summary = build_missing_summary(df)
+    missing_action_summary = build_week6_missing_action_summary(df)
+    column_inventory = build_week6_column_inventory(df)
+    transformation_log = pd.DataFrame(week6_transformation_rows())
+
+    paths = {
+        "prepared": WEEK6_DIR / "sold_analysis_ready_week6.csv",
+        "date_check": WEEK6_DIR / "sold_week6_date_conversion_check.csv",
+        "numeric_check": WEEK6_DIR / "sold_week6_numeric_conversion_check.csv",
+        "missing_summary": WEEK6_DIR / "sold_week6_missing_summary.csv",
+        "missing_action_summary": WEEK6_DIR / "sold_week6_missing_action_summary.csv",
+        "column_inventory": WEEK6_DIR / "sold_week6_column_inventory.csv",
+        "transformation_log": WEEK6_DIR / "sold_week6_transformation_log.csv",
+    }
+    df.to_csv(paths["prepared"], index=False)
+    date_check.to_csv(paths["date_check"], index=False)
+    numeric_check.to_csv(paths["numeric_check"], index=False)
+    missing_summary.to_csv(paths["missing_summary"], index=False)
+    missing_action_summary.to_csv(paths["missing_action_summary"], index=False)
+    column_inventory.to_csv(paths["column_inventory"], index=False)
+    transformation_log.to_csv(paths["transformation_log"], index=False)
+    return paths
+
+
 def run_week45_cleaning(input_path: Path) -> Dict[str, Path]:
     ensure_dir(WEEK45_DIR)
     original_df = pd.read_csv(input_path, low_memory=False)
@@ -753,9 +1041,11 @@ def run_week45_cleaning(input_path: Path) -> Dict[str, Path]:
 def main() -> None:
     week23_paths = run_week23_analysis()
     enriched_path = run_mortgage_enrichment(week23_paths["filtered"])
-    run_week45_cleaning(enriched_path)
+    week45_paths = run_week45_cleaning(enriched_path)
+    run_week6_preparation(week45_paths["cleaned"])
     print(f"\nSaved sold Week 2-3 outputs to: {WEEK23_DIR}")
     print(f"Saved sold Week 4-5 outputs to: {WEEK45_DIR}")
+    print(f"Saved sold Week 6 outputs to: {WEEK6_DIR}")
 
 
 if __name__ == "__main__":
