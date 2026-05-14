@@ -737,9 +737,16 @@ def compute_outlier_summary(df: pd.DataFrame, columns: Iterable[str]) -> pd.Data
 
 def add_week6_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    df["price_ratio"] = df["ClosePrice"] / df["OriginalListPrice"]
+    df["close_to_original_list_ratio"] = df["ClosePrice"] / df["OriginalListPrice"]
     df["sale_to_list_ratio"] = df["ClosePrice"] / df["ListPrice"]
-    df["sale_to_original_list_ratio"] = df["ClosePrice"] / df["OriginalListPrice"]
+    df["price_per_sqft"] = df["ClosePrice"] / df["LivingArea"]
     df["close_price_per_sqft"] = df["ClosePrice"] / df["LivingArea"]
+    df["yrmo"] = pd.to_datetime(df["CloseDate"], errors="coerce").dt.to_period("M").astype(str)
+    df["listing_to_contract_days"] = (
+        pd.to_datetime(df["PurchaseContractDate"], errors="coerce")
+        - pd.to_datetime(df["ListingContractDate"], errors="coerce")
+    ).dt.days
     df["listing_to_close_days"] = (
         pd.to_datetime(df["CloseDate"], errors="coerce") - pd.to_datetime(df["ListingContractDate"], errors="coerce")
     ).dt.days
@@ -772,19 +779,22 @@ def winsorize_columns(df: pd.DataFrame, summary: pd.DataFrame) -> pd.DataFrame:
 
 def build_week6_monthly_summary(df: pd.DataFrame) -> pd.DataFrame:
     working = df.copy()
-    working["year_month"] = working["year_month"].astype(str)
+    working["yrmo"] = working["yrmo"].astype(str)
     return (
-        working.groupby("year_month", dropna=False)
+        working.groupby("yrmo", dropna=False)
         .agg(
             transaction_count=("ListingId", "count"),
             median_close_price=("ClosePrice_winsorized", "median"),
             mean_close_price=("ClosePrice_winsorized", "mean"),
             median_days_on_market=("DaysOnMarket_winsorized", "median"),
-            median_sale_to_list_ratio=("sale_to_list_ratio", "median"),
+            median_price_ratio=("price_ratio", "median"),
+            median_price_per_sqft=("price_per_sqft", "median"),
+            median_listing_to_contract_days=("listing_to_contract_days", "median"),
+            median_contract_to_close_days=("contract_to_close_days", "median"),
             avg_mortgage_rate=("mortgage30us_monthly_avg", "mean"),
         )
         .reset_index()
-        .sort_values("year_month")
+        .sort_values("yrmo")
     )
 
 
@@ -796,8 +806,11 @@ def build_week6_county_summary(df: pd.DataFrame) -> pd.DataFrame:
             transaction_count=("ListingId", "count"),
             median_close_price=("ClosePrice_winsorized", "median"),
             mean_close_price=("ClosePrice_winsorized", "mean"),
-            median_close_price_per_sqft=("close_price_per_sqft", "median"),
+            median_price_ratio=("price_ratio", "median"),
+            median_price_per_sqft=("price_per_sqft", "median"),
             median_days_on_market=("DaysOnMarket_winsorized", "median"),
+            median_listing_to_contract_days=("listing_to_contract_days", "median"),
+            median_contract_to_close_days=("contract_to_close_days", "median"),
             avg_mortgage_rate=("mortgage30us_monthly_avg", "mean"),
         )
         .reset_index()
@@ -807,9 +820,9 @@ def build_week6_county_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_week6_county_month_summary(df: pd.DataFrame) -> pd.DataFrame:
     working = df[df["CountyOrParish"].notna()].copy()
-    working["year_month"] = working["year_month"].astype(str)
+    working["yrmo"] = working["yrmo"].astype(str)
     return (
-        working.groupby(["CountyOrParish", "year_month"], dropna=False)
+        working.groupby(["CountyOrParish", "yrmo"], dropna=False)
         .agg(
             transaction_count=("ListingId", "count"),
             median_close_price=("ClosePrice_winsorized", "median"),
@@ -817,19 +830,61 @@ def build_week6_county_month_summary(df: pd.DataFrame) -> pd.DataFrame:
             median_days_on_market=("DaysOnMarket_winsorized", "median"),
         )
         .reset_index()
-        .sort_values(["CountyOrParish", "year_month"])
+        .sort_values(["CountyOrParish", "yrmo"])
     )
+
+
+def build_week6_property_subtype_summary(df: pd.DataFrame) -> pd.DataFrame:
+    working = df[df["PropertySubType"].notna()].copy()
+    return (
+        working.groupby("PropertySubType", dropna=False)
+        .agg(
+            transaction_count=("ListingId", "count"),
+            median_close_price=("ClosePrice_winsorized", "median"),
+            mean_close_price=("ClosePrice_winsorized", "mean"),
+            median_price_ratio=("price_ratio", "median"),
+            median_price_per_sqft=("price_per_sqft", "median"),
+            median_days_on_market=("DaysOnMarket_winsorized", "median"),
+        )
+        .reset_index()
+        .sort_values(["transaction_count", "median_close_price"], ascending=[False, False])
+    )
+
+
+def build_week6_sample_output(df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "ListingId",
+        "CountyOrParish",
+        "PropertySubType",
+        "CloseDate",
+        "OriginalListPrice",
+        "ClosePrice",
+        "LivingArea",
+        "DaysOnMarket",
+        "yrmo",
+        "price_ratio",
+        "close_to_original_list_ratio",
+        "price_per_sqft",
+        "listing_to_contract_days",
+        "contract_to_close_days",
+    ]
+    available = [column for column in columns if column in df.columns]
+    return df.loc[:, available].head(10).copy()
 
 
 def run_week6_analysis(input_path: Path) -> Dict[str, Path]:
     ensure_dir(WEEK6_DIR)
     df = pd.read_csv(input_path, low_memory=False)
+    df = week45_clean_strings(df)
+    df = week45_convert_types(df)
     df = add_week6_features(df)
     outlier_summary = compute_outlier_summary(df, WEEK6_OUTLIER_COLUMNS)
     feature_ready = winsorize_columns(df, outlier_summary)
     monthly_summary = build_week6_monthly_summary(feature_ready)
     county_summary = build_week6_county_summary(feature_ready)
     county_month_summary = build_week6_county_month_summary(feature_ready)
+    property_subtype_summary = build_week6_property_subtype_summary(feature_ready)
+    sample_output = build_week6_sample_output(feature_ready)
 
     paths = {
         "feature_ready": WEEK6_DIR / "sold_feature_ready_week6.csv",
@@ -837,12 +892,16 @@ def run_week6_analysis(input_path: Path) -> Dict[str, Path]:
         "monthly_summary": WEEK6_DIR / "sold_monthly_market_summary_week6.csv",
         "county_summary": WEEK6_DIR / "sold_county_market_summary_week6.csv",
         "county_month_summary": WEEK6_DIR / "sold_county_month_market_summary_week6.csv",
+        "property_subtype_summary": WEEK6_DIR / "sold_property_subtype_summary_week6.csv",
+        "sample_output": WEEK6_DIR / "sold_metric_sample_output_week6.csv",
     }
     feature_ready.to_csv(paths["feature_ready"], index=False)
     outlier_summary.to_csv(paths["outlier_summary"], index=False)
     monthly_summary.to_csv(paths["monthly_summary"], index=False)
     county_summary.to_csv(paths["county_summary"], index=False)
     county_month_summary.to_csv(paths["county_month_summary"], index=False)
+    property_subtype_summary.to_csv(paths["property_subtype_summary"], index=False)
+    sample_output.to_csv(paths["sample_output"], index=False)
     return paths
 
 
@@ -1043,6 +1102,7 @@ def main() -> None:
     enriched_path = run_mortgage_enrichment(week23_paths["filtered"])
     week45_paths = run_week45_cleaning(enriched_path)
     run_week6_preparation(week45_paths["cleaned"])
+    run_week6_analysis(week45_paths["cleaned"])
     print(f"\nSaved sold Week 2-3 outputs to: {WEEK23_DIR}")
     print(f"Saved sold Week 4-5 outputs to: {WEEK45_DIR}")
     print(f"Saved sold Week 6 outputs to: {WEEK6_DIR}")
